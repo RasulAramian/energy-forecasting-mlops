@@ -10,27 +10,31 @@ app = FastAPI(title="Energy Forecasting API", version="1.0.0")
 model = EnergyLSTM(input_dim=1, hidden_dim=50, num_layers=1, output_dim=1)
 scaler = None
 
+is_model_loaded = False
+is_scaler_loaded = False
+
 try:
     model.load_state_dict(torch.load("models/energy_lstm_model.pth", map_location=torch.device("cpu")))
     model.eval()
+    is_model_loaded = True
+    
     scaler = joblib.load("models/scaler.pkl")
+    is_scaler_loaded = True
 except Exception as e:
     print(f"Warning: Artifacts not found or failed to load. Details: {e}")
 
 @app.get("/health")
 def health_check():
+    ready = is_model_loaded and is_scaler_loaded
     return {
-        "status": "healthy",
-        "model_loaded": model is not None,
-        "scaler_loaded": scaler is not None
+        "status": "healthy" if ready else "not_ready",
+        "model_loaded": is_model_loaded,
+        "scaler_loaded": is_scaler_loaded
     }
 
 @app.post("/predict", response_model=PredictionResponse)
 def predict(payload: PredictionRequest):
-    if len(payload.sequence) != 24:
-        raise HTTPException(status_code=400, detail="Sequence length must be exactly 24 items.")
-    
-    if scaler is None or model is None:
+    if not is_scaler_loaded or not is_model_loaded:
         raise HTTPException(status_code=500, detail="Model or scaler not loaded properly.")
     
     try:
