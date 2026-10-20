@@ -5,8 +5,8 @@ class PredictionRequest(BaseModel):
     sequence: List[float] = Field(
         ..., 
         description="Sequence of 24 hourly energy consumption values",
-        min_items=24,
-        max_items=24
+        min_length=24,
+        max_length=24
     )
 
 class PredictionResponse(BaseModel):

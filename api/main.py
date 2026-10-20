@@ -1,27 +1,52 @@
+import os
 import joblib
-import numpy as np
 import torch
+import numpy as np
 from fastapi import FastAPI, HTTPException
-from api.schemas import PredictionRequest, PredictionResponse
+from contextlib import asynccontextmanager
+
+from api.schemas import PredictionRequest
 from src.model import EnergyLSTM
 
-app = FastAPI(title="Energy Forecasting API", version="1.0.0")
-
-model = EnergyLSTM(input_dim=1, hidden_dim=50, num_layers=1, output_dim=1)
+# Global variables for model and scaler
+model = None
 scaler = None
-
 is_model_loaded = False
 is_scaler_loaded = False
 
-try:
-    model.load_state_dict(torch.load("models/energy_lstm_model.pth", map_location=torch.device("cpu")))
-    model.eval()
-    is_model_loaded = True
-    
-    scaler = joblib.load("models/scaler.pkl")
-    is_scaler_loaded = True
-except Exception as e:
-    print(f"Warning: Artifacts not found or failed to load. Details: {e}")
+MODEL_PATH = "models/energy_lstm_model.pth"
+SCALER_PATH = "models/scaler.pkl"
+
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    global model, scaler, is_model_loaded, is_scaler_loaded
+
+    try:
+        if os.path.exists(MODEL_PATH):
+            model = EnergyLSTM(input_dim=1, hidden_dim=50, num_layers=1, output_dim=1)
+            model.load_state_dict(torch.load(MODEL_PATH, map_location=torch.device("cpu")))
+            model.eval()
+            is_model_loaded = True
+        else:
+            is_model_loaded = False
+
+        if os.path.exists(SCALER_PATH):
+            scaler = joblib.load(SCALER_PATH)
+            is_scaler_loaded = True
+        else:
+            is_scaler_loaded = False
+
+    except Exception as e:
+        print(f"Error loading artifacts: {e}")
+        is_model_loaded = False
+        is_scaler_loaded = False
+        
+    yield
+
+
+app = FastAPI(title="Energy Forecasting API", version="1.0.0", lifespan=lifespan)
+
 
 @app.get("/health")
 def health_check():
@@ -29,25 +54,37 @@ def health_check():
     return {
         "status": "healthy" if ready else "not_ready",
         "model_loaded": is_model_loaded,
-        "scaler_loaded": is_scaler_loaded
+        "scaler_loaded": is_scaler_loaded,
     }
 
-@app.post("/predict", response_model=PredictionResponse)
+
+@app.post("/predict")
 def predict(payload: PredictionRequest):
-    if not is_scaler_loaded or not is_model_loaded:
-        raise HTTPException(status_code=500, detail="Model or scaler not loaded properly.")
-    
+    if not is_model_loaded or not is_scaler_loaded:
+        raise HTTPException(
+            status_code=503,
+            detail="Model or scaler not loaded properly."
+        )
+
     try:
-        input_array = np.array(payload.sequence, dtype=np.float32).reshape(-1, 1)
-        scaled_input = scaler.transform(input_array)
-        input_tensor = torch.tensor(scaled_input, dtype=torch.float32).unsqueeze(0)
+        sequence = np.array(payload.sequence, dtype=np.float32).reshape(-1, 1)
+        scaled_sequence = scaler.transform(sequence)
         
+        tensor_input = torch.tensor(scaled_sequence, dtype=torch.float32).unsqueeze(0)
+
         with torch.no_grad():
-            scaled_prediction = model(input_tensor)
-            
-        prediction_unscaled = scaler.inverse_transform(scaled_prediction.numpy())
-        predicted_value = float(prediction_unscaled[0][0])
-        
-        return PredictionResponse(predicted_value=predicted_value)
+            prediction_scaled = model(tensor_input).item()
+
+        prediction_array = np.array([[prediction_scaled]], dtype=np.float32)
+        predicted_value = float(scaler.inverse_transform(prediction_array)[0][0])
+
+        return {
+            "status": "success",
+            "predicted_value": predicted_value
+        }
+
     except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+        raise HTTPException(
+            status_code=500,
+            detail=f"Inference error: {str(e)}"
+        )

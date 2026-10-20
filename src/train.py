@@ -1,267 +1,133 @@
 import os
-import copy
-import random
-
-import joblib
 import numpy as np
 import pandas as pd
 import torch
 import torch.nn as nn
-
-from torch.utils.data import DataLoader
+import torch.optim as optim
+from torch.utils.data import DataLoader, TensorDataset
 from sklearn.preprocessing import MinMaxScaler
+import joblib
 
-from src.dataset import EnergyDataset, create_sequences
 from src.model import EnergyLSTM
 
 
 def load_and_preprocess_data(
-    file_path: str,
-    datetime_col: str = "datetime",
-    feature_col: str = "consumption_mw",
-    seq_length: int = 24,
-    train_ratio: float = 0.70,
-    val_ratio: float = 0.15
+    data_path="data/energy_consumption.csv",
+    datetime_col="Datetime",
+    feature_col="AEP_MW",
+    seq_len=24
 ):
-    """Load, split, scale, and prepare time-series datasets."""
+    if not os.path.exists(data_path):
+        raise FileNotFoundError(f"Data file not found at {data_path}")
 
-    if seq_length < 1:
-        raise ValueError("seq_length must be at least 1.")
+    df = pd.read_csv(data_path)
 
-    if not 0 < train_ratio < 1:
-        raise ValueError("train_ratio must be between 0 and 1.")
-
-    if not 0 < val_ratio < 1:
-        raise ValueError("val_ratio must be between 0 and 1.")
-
-    if train_ratio + val_ratio >= 1:
-        raise ValueError("train_ratio + val_ratio must be less than 1.")
-
-    if not os.path.isfile(file_path):
-        raise FileNotFoundError(f"Dataset file not found: {file_path}")
-
-    df = pd.read_csv(file_path)
-
+    # Validate columns
     for col in [datetime_col, feature_col]:
         if col not in df.columns:
-            raise ValueError(f"Required column '{col}' was not found.")
+            raise ValueError(f"Required column '{col}' was not found in CSV columns: {list(df.columns)}")
 
-    df[datetime_col] = pd.to_datetime(
-        df[datetime_col],
-        errors="raise"
-    )
-
-    df = df.sort_values(datetime_col).reset_index(drop=True)
-
-    if df[datetime_col].duplicated().any():
-        raise ValueError(
-            "Duplicate timestamps must be handled before splitting."
-        )
+    # Sort chronologically and clean data
+    df[datetime_col] = pd.to_datetime(df[datetime_col])
+    df = df.sort_values(by=datetime_col).reset_index(drop=True)
+    df = df.dropna(subset=[feature_col])
 
     values = df[[feature_col]].to_numpy(dtype=np.float32)
 
-    if not np.isfinite(values).all():
-        raise ValueError(
-            "The feature column contains missing or infinite values."
-        )
+    # Time-series split (e.g., 70% train, 15% val, 15% test)
+    train_size = int(len(values) * 0.70)
+    val_size = int(len(values) * 0.15)
 
-    total_rows = len(values)
+    train_data = values[:train_size]
+    val_data = values[train_size - seq_len:train_size + val_size]
+    test_data = values[train_size + val_size - seq_len:]
 
-    train_end = int(total_rows * train_ratio)
-    val_end = int(total_rows * (train_ratio + val_ratio))
+    # Fit MinMaxScaler ONLY on training data to avoid data leakage
+    scaler = MinMaxScaler(feature_range=(0, 1))
+    train_scaled = scaler.fit_transform(train_data)
+    val_scaled = scaler.transform(val_data)
+    test_scaled = scaler.transform(test_data)
 
-    if train_end <= seq_length:
-        raise ValueError(
-            "The training split is too small for the selected sequence length."
-        )
+    def create_sequences(data, seq_length):
+        xs, ys = [], []
+        for i in range(len(data) - seq_length):
+            x = data[i:(i + seq_length)]
+            y = data[i + seq_length]
+            xs.append(x)
+            ys.append(y)
+        return np.array(xs), np.array(ys)
 
-    if val_end <= train_end:
-        raise ValueError("The validation split is empty.")
+    X_train, y_train = create_sequences(train_scaled, seq_len)
+    X_val, y_val = create_sequences(val_scaled, seq_len)
+    X_test, y_test = create_sequences(test_scaled, seq_len)
 
-    if val_end >= total_rows:
-        raise ValueError("The test split is empty.")
-
-    train_values = values[:train_end]
-
-    scaler = MinMaxScaler()
-    scaler.fit(train_values)
-
-    scaled_values = scaler.transform(values).astype(np.float32)
-
-    train_scaled = scaled_values[:train_end]
-
-    val_context = scaled_values[
-        train_end - seq_length:val_end
-    ]
-
-    test_context = scaled_values[
-        val_end - seq_length:
-    ]
-
-    X_train, y_train = create_sequences(
-        train_scaled,
-        seq_length
-    )
-
-    X_val, y_val = create_sequences(
-        val_context,
-        seq_length
-    )
-
-    X_test, y_test = create_sequences(
-        test_context,
-        seq_length
-    )
-
-    datasets = {
-        "train": EnergyDataset(X_train, y_train),
-        "validation": EnergyDataset(X_val, y_val),
-        "test": EnergyDataset(X_test, y_test)
-    }
-
-    print(f"Total rows: {total_rows}")
-    print(f"Training samples: {len(datasets['train'])}")
-    print(f"Validation samples: {len(datasets['validation'])}")
-    print(f"Test samples: {len(datasets['test'])}")
-
-    return datasets, scaler
+    return {
+        "train": (torch.tensor(X_train, dtype=torch.float32), torch.tensor(y_train, dtype=torch.float32)),
+        "val": (torch.tensor(X_val, dtype=torch.float32), torch.tensor(y_val, dtype=torch.float32)),
+        "test": (torch.tensor(X_test, dtype=torch.float32), torch.tensor(y_test, dtype=torch.float32)),
+    }, scaler
 
 
-def train_model(
-    data_path: str = "data/energy_consumption.csv",
-    models_dir: str = "models",
-    epochs: int = 10,
-    batch_size: int = 32,
-    lr: float = 0.001,
-    seed: int = 42
-):
-    """Train EnergyLSTM and save the best model and fitted scaler."""
+def train_model():
+    os.makedirs("models", exist_ok=True)
+    data_path = "data/energy_consumption.csv"
 
-    if epochs < 1:
-        raise ValueError("epochs must be at least 1.")
-
-    if batch_size < 1:
-        raise ValueError("batch_size must be at least 1.")
-
-    if not np.isfinite(lr) or lr <= 0:
-        raise ValueError("Learning rate must be a positive finite number.")
-
-    random.seed(seed)
-    np.random.seed(seed)
-    torch.manual_seed(seed)
-
-    os.makedirs(models_dir, exist_ok=True)
-
+    print("Loading and preprocessing data...")
     datasets, scaler = load_and_preprocess_data(data_path)
 
     train_loader = DataLoader(
-        datasets["train"],
-        batch_size=batch_size,
+        TensorDataset(datasets["train"][0], datasets["train"][1]),
+        batch_size=32,
         shuffle=True
     )
-
     val_loader = DataLoader(
-        datasets["validation"],
-        batch_size=batch_size,
+        TensorDataset(datasets["val"][0], datasets["val"][1]),
+        batch_size=32,
         shuffle=False
     )
 
-    model = EnergyLSTM(
-        input_dim=1,
-        hidden_dim=50,
-        num_layers=1,
-        output_dim=1
-    )
-
+    model = EnergyLSTM(input_dim=1, hidden_dim=50, num_layers=1, output_dim=1)
     criterion = nn.MSELoss()
-
-    optimizer = torch.optim.Adam(
-        model.parameters(),
-        lr=lr
-    )
+    optimizer = optim.Adam(model.parameters(), lr=0.001)
 
     best_val_loss = float("inf")
-    best_state_dict = None
+    model_path = "models/energy_lstm_model.pth"
+    scaler_path = "models/scaler.pkl"
 
+    print("Starting training...")
+    epochs = 5
     for epoch in range(epochs):
         model.train()
-
         train_loss = 0.0
-
-        for sequences, targets in train_loader:
+        for X_batch, y_batch in train_loader:
             optimizer.zero_grad()
-
-            outputs = model(sequences)
-
-            loss = criterion(outputs, targets)
-
+            y_pred = model(X_batch)
+            loss = criterion(y_pred, y_batch)
             loss.backward()
-
             optimizer.step()
+            train_loss += loss.item() * X_batch.size(0)
 
-            train_loss += loss.item() * len(sequences)
+        train_loss /= len(train_loader.dataset)
 
-        train_loss /= len(datasets["train"])
-
+        # Validation
         model.eval()
-
         val_loss = 0.0
-
         with torch.no_grad():
-            for sequences, targets in val_loader:
-                outputs = model(sequences)
+            for X_batch, y_batch in val_loader:
+                y_pred = model(X_batch)
+                loss = criterion(y_pred, y_batch)
+                val_loss += loss.item() * X_batch.size(0)
 
-                loss = criterion(outputs, targets)
-
-                val_loss += loss.item() * len(sequences)
-
-        val_loss /= len(datasets["validation"])
-
-        print(
-            f"Epoch [{epoch + 1}/{epochs}] "
-            f"- Train Loss: {train_loss:.6f} "
-            f"- Val Loss: {val_loss:.6f}"
-        )
+        val_loss /= len(val_loader.dataset)
+        print(f"Epoch {epoch+1}/{epochs} | Train Loss: {train_loss:.4f} | Val Loss: {val_loss:.4f}")
 
         if val_loss < best_val_loss:
             best_val_loss = val_loss
+            torch.save(model.state_dict(), model_path)
+            joblib.dump(scaler, scaler_path)
+            print("--> Saved best model and scaler artifacts.")
 
-            best_state_dict = copy.deepcopy(
-                model.state_dict()
-            )
-
-    if best_state_dict is None:
-        raise RuntimeError(
-            "Training did not produce a valid model checkpoint."
-        )
-
-    model.load_state_dict(best_state_dict)
-
-    model_path = os.path.join(
-        models_dir,
-        "energy_lstm_model.pth"
-    )
-
-    scaler_path = os.path.join(
-        models_dir,
-        "scaler.pkl"
-    )
-
-    torch.save(
-        model.state_dict(),
-        model_path
-    )
-
-    joblib.dump(
-        scaler,
-        scaler_path
-    )
-
-    print(f"Best validation loss: {best_val_loss:.6f}")
-    print(f"Model saved to: {model_path}")
-    print(f"Scaler saved to: {scaler_path}")
-
-    return model, scaler, datasets
+    print("Training finished successfully!")
 
 
 if __name__ == "__main__":
