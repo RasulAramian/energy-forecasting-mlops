@@ -19,7 +19,11 @@ except Exception as e:
 
 @app.get("/health")
 def health_check():
-    return {"status": "healthy"}
+    return {
+        "status": "healthy",
+        "model_loaded": model is not None,
+        "scaler_loaded": scaler is not None
+    }
 
 @app.post("/predict", response_model=PredictionResponse)
 def predict(payload: PredictionRequest):
