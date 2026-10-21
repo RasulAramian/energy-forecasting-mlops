@@ -1,4 +1,4 @@
-# Energy Forecasting with LSTM \| ML Engineering & MLOps
+# ⚡ Energy Forecasting with LSTM | ML Engineering & MLOps
 
 An end-to-end machine learning project for hourly electricity
 consumption forecasting using a PyTorch Long Short-Term Memory (LSTM)
