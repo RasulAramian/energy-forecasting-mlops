@@ -1,235 +1,211 @@
-# ⚡ Energy Forecasting with LSTM | ML Engineering & MLOps
+# Energy Forecasting with LSTM \| ML Engineering & MLOps
 
-An end-to-end machine learning project for hourly electricity consumption forecasting using a Long Short-Term Memory (LSTM) neural network built with PyTorch.
+An end-to-end machine learning project for hourly electricity
+consumption forecasting using a PyTorch Long Short-Term Memory (LSTM)
+network.
 
-The project covers time-series preprocessing, model training, chronological evaluation, baseline comparison, REST API development with FastAPI, automated testing, and Docker-based packaging.
+The project covers time-series preprocessing, model training,
+evaluation, a FastAPI prediction service, automated tests, Docker
+packaging, and deployment on Render.
 
-## 📌 Project Overview
+## Project Overview
 
-Accurate electricity demand forecasting can help energy providers improve operational planning, allocate resources, and anticipate changes in consumption.
+The model uses the previous 24 hourly electricity consumption
+observations to predict consumption for the next hour.
 
-This project uses historical hourly electricity consumption data to predict the next hour's demand based on the previous 24 hours.
+## Key Features
 
-The goal is to demonstrate a practical machine learning workflow that combines deep learning, time-series forecasting, API development, testing, and deployment-oriented engineering practices.
-
-## 🎯 Key Features
-
-- Real-world electricity consumption dataset.
-- Time-series preprocessing and chronological data splitting.
-- LSTM-based forecasting model implemented in PyTorch.
-- Training-only feature scaling to reduce data leakage.
-- Validation-based model selection.
-- Comparison against a seasonal naive baseline.
-- REST API built with FastAPI.
-- Input validation using Pydantic.
+- Real-world hourly electricity consumption data from the AEP region.
+- Chronological train, validation, and test splits.
+- LSTM forecasting model implemented with PyTorch.
+- `MinMaxScaler` fitted on training data only.
+- Model selection based on validation loss.
+- FastAPI prediction endpoint with Pydantic request validation.
 - Automated tests with pytest.
-- Docker configuration for containerized execution.
-- GitHub Actions workflow for automated testing.
+- Docker configuration and GitHub Actions workflow.
+- Render deployment.
 
-## 📊 Dataset
+## Dataset
 
-**Dataset:** [Hourly Energy Consumption — AEP Hourly](https://www.kaggle.com/datasets/robikscube/hourly-energy-consumption)
+**Dataset:** [Hourly Energy Consumption — AEP
+Hourly](https://www.kaggle.com/datasets/robikscube/hourly-energy-consumption)
 
-The dataset contains historical hourly electricity consumption measurements for the AEP region.
+The project CSV uses `Datetime` as the timestamp column and `AEP_MW` as
+the target column.
 
-| Property | Description |
-|---|---|
-| Source | Hourly Energy Consumption dataset |
-| Region | AEP |
-| Target variable | Electricity consumption in MW |
-| Timestamp column | `Datetime` |
-| Target column | `AEP_MW` |
-| Approximate number of records | 121,000 |
-| Forecast horizon | 1 hour |
-| Input sequence length | 24 hours |
+| Property              | Description             |
+|-----------------------|-------------------------|
+| Region                | AEP                     |
+| Target                | Electricity consumption |
+| Target unit           | Megawatts (MW)          |
+| Forecast horizon      | 1 hour                  |
+| Input sequence length | 24 observations         |
 
-The data is sorted chronologically, and duplicate timestamps are handled during preprocessing.
+The preprocessing code parses timestamps, sorts rows chronologically,
+and drops rows with missing target values. It does not currently remove
+duplicate timestamps, so duplicate handling should be reviewed if the
+dataset changes.
 
-The target variable is renamed to `consumption_mw`, and the timestamp column is converted to a datetime representation.
-
-## 🧠 Machine Learning Approach
+## Machine Learning Approach
 
 ### Problem Formulation
 
-This is a univariate time-series forecasting problem.
+This is a univariate time-series forecasting problem. Given the most
+recent 24 hourly consumption measurements, the model predicts the next
+hourly value:
 
-Given the previous 24 hourly consumption measurements, the model predicts the consumption for the next hour.
+Given the previous 24 hourly observations, the model predicts the next hourly consumption value:
 
-For a time series:
+`Prediction at time t+1 = f(observations from time t-23 through time t)`
 
-\[
-x_1, x_2, \ldots, x_t
-\]
+### Preprocessing
 
-the model uses the most recent 24 observations to predict:
+The current pipeline:
 
-\[
-\hat{x}_{t+1} = f(x_{t-23}, \ldots, x_t)
-\]
+1.  Loads the CSV file and parses timestamps.
+2.  Sorts observations chronologically and drops rows with missing
+    target values.
+3.  Splits observations chronologically into training, validation, and
+    test portions.
+4.  Fits `MinMaxScaler` on the training portion only.
+5.  Applies the scaler to each portion.
+6.  Creates sliding windows containing 24 observations.
 
-where:
+| Split      | Approximate proportion |
+|------------|-----------------------:|
+| Training   |                    70% |
+| Validation |                    15% |
+| Test       |                    15% |
 
-- \(x_t\) represents the observed electricity consumption at time \(t\).
-- \(\hat{x}_{t+1}\) represents the predicted consumption for the next hour.
-- \(f\) represents the trained LSTM model.
-
-### Data Preprocessing
-
-The preprocessing pipeline includes:
-
-1. Loading the historical electricity consumption data.
-2. Converting timestamps to datetime values.
-3. Sorting observations chronologically.
-4. Handling duplicate timestamps.
-5. Splitting the dataset into training, validation, and test sets.
-6. Scaling the target variable using `MinMaxScaler`.
-7. Creating sliding windows containing 24 historical observations.
-
-The dataset is split chronologically:
-
-| Split | Proportion |
-|---|---:|
-| Training | 70% |
-| Validation | 15% |
-| Test | 15% |
-
-Random splitting is avoided because it can introduce temporal leakage and produce unrealistic evaluation results.
-
-The scaler is fitted on the training data only, then applied to the validation and test data.
-
-The validation and test sequences use historical observations immediately preceding their respective prediction windows as context. This allows the model to use the available history without randomly mixing future observations into the training set.
+The validation and test portions include the preceding 24 observations
+as context for sequence construction. Random splitting is avoided to
+preserve time order.
 
 ### Model Architecture
 
-The forecasting model uses an LSTM network implemented with PyTorch.
+The model in `src/model.py` consists of an LSTM layer, a fully connected
+layer with 25 units, a ReLU activation, and a final fully connected
+layer that produces one prediction. The input shape is
+`(batch_size, 24, 1)` and the output shape is `(batch_size, 1)`.
 
-The model consists of:
+### Training
 
-1. An LSTM layer that learns temporal patterns from sequential observations.
-2. A fully connected layer that maps the LSTM representation to a single numerical prediction.
+The current training configuration uses a batch size of 32, Mean Squared
+Error loss, Adam with a learning rate of 0.001, and five epochs. The
+saved model is selected using validation loss. Model weights and the
+fitted scaler are stored in `models/`.
 
-The input contains 24 consecutive hourly measurements, and the output is a single predicted consumption value.
+## Evaluation Results
 
-LSTMs are designed to learn dependencies in sequential data and can capture patterns that are difficult to represent using a simple feed-forward neural network.
+The latest local execution of `python -m src.evaluate` produced these
+results for the saved model and current test preprocessing:
 
-### Training Strategy
+| Metric                         |      Result |
+|--------------------------------|------------:|
+| Mean Absolute Error (MAE)      | 154.3809 MW |
+| Root Mean Squared Error (RMSE) | 205.9744 MW |
 
-The training pipeline includes:
+Previously documented metrics were not reproduced by the current run and
+are not presented here as verified results. Results may vary if the
+dataset, saved model, preprocessing, dependencies, or training
+configuration changes.
 
-- Mini-batch training with PyTorch `DataLoader`.
-- Mean Squared Error (MSE) loss.
-- Adam optimizer.
-- Validation loss monitoring.
-- Saving the model with the best validation performance.
+To run evaluation locally:
 
-The current training configuration uses a batch size of 32.
+``` bash
+python -m src.evaluate
+```
 
-Model selection is based on validation performance rather than test-set performance. The test set is reserved for final evaluation.
+## REST API
 
-## 📈 Results
+The API is built with FastAPI. At startup, it loads the saved model and
+scaler.
 
-The following results are documented from the project's evaluation runs.
+### Deployment
 
-### LSTM Performance
-
-| Metric | Result |
-|---|---:|
-| MAE | 144.45 MW |
-| RMSE | 192.62 MW |
-| R² | 0.9940 |
-| MAPE | 1.00% |
-
-### Baseline Comparison
-
-The model is compared against a seasonal naive baseline that predicts the next hour's consumption using the consumption observed at the same hour on the previous day.
-
-| Model | MAE | RMSE |
-|---|---:|---:|
-| Seasonal naive baseline | 925.27 MW | 1,220.81 MW |
-| LSTM | 144.45 MW | 192.62 MW |
-
-The LSTM achieved an approximately **84.39% reduction in MAE** compared with the seasonal naive baseline.
-
-### Interpretation
-
-The reported metrics indicate that the LSTM performed substantially better than the selected baseline on the evaluated test period.
-
-However, forecasting performance can vary with the evaluation period, data preprocessing, training configuration, and random initialization.
-
-**Reproducibility note:** These metrics are documented from previous evaluation runs. The standalone evaluation script still needs to be completed and validated so that the results can be independently reproduced from the repository.
-
-## 🚀 REST API
-
-The project provides a REST API implemented with FastAPI.
-
-The API loads the trained model and fitted scaler and exposes endpoints for health checks and hourly consumption forecasting.
+- **API:** https://energy-forecasting-mlops.onrender.com
+- **Interactive documentation:**
+  https://energy-forecasting-mlops.onrender.com/docs
+- **Health check:** https://energy-forecasting-mlops.onrender.com/health
 
 ### Endpoints
 
-| Method | Endpoint | Description |
-|---|---|---|
-| GET | `/` | Basic API information, if implemented |
-| GET | `/health` | Reports API and model-loading status |
-| POST | `/predict` | Generates a forecast from 24 historical observations |
+| Method | Endpoint   | Description                                                    |
+|--------|------------|----------------------------------------------------------------|
+| `GET`  | `/health`  | Reports whether the model and scaler loaded successfully       |
+| `POST` | `/predict` | Predicts the next hourly value from 24 historical observations |
 
-The exact endpoints available depend on the current implementation in `api/main.py`.
+### Health Check
+
+``` bash
+curl https://energy-forecasting-mlops.onrender.com/health
+```
+
+A ready service returns a response similar to:
+
+``` json
+{
+  "status": "healthy",
+  "model_loaded": true,
+  "scaler_loaded": true
+}
+```
 
 ### Prediction Input
 
-The prediction endpoint expects a sequence containing 24 historical consumption values.
+The `/predict` endpoint expects exactly 24 **raw consumption values in
+MW**. The API applies the saved scaler internally and returns the
+prediction in MW.
 
-Example request:
+Example request to a local API:
 
-```bash
+``` bash
 curl -X POST "http://localhost:8001/predict" \
   -H "Content-Type: application/json" \
   -d '{
     "sequence": [
-      0.50, 0.52, 0.49, 0.48, 0.51, 0.54,
-      0.56, 0.55, 0.53, 0.52, 0.50, 0.49,
-      0.48, 0.47, 0.49, 0.51, 0.54, 0.57,
-      0.59, 0.58, 0.56, 0.54, 0.52, 0.51
+      15000, 15200, 15400, 15300, 15500, 15800,
+      16000, 16200, 16100, 15900, 15700, 15600,
+      15500, 15400, 15600, 15800, 16100, 16400,
+      16600, 16500, 16300, 16100, 15900, 15800
     ]
   }'
 ```
 
-**Note:** This example assumes that the API expects scaled input values. The exact input and output contract should be confirmed against `api/schemas.py` and `api/main.py`.
+Example response from a previous successful request:
 
-### Example Response
+``` json
+{
+  "status": "success",
+  "predicted_value": 19498.986328125
+}
+```
 
-The response contains the predicted consumption value according to the response schema implemented by the API.
+The prediction depends on the input sequence and the loaded model. When
+running locally, Swagger UI is available at
+`http://localhost:8001/docs`.
 
-The precise JSON field names and units should be taken from the current API implementation rather than assumed from this example.
+## Technology Stack
 
-### API Documentation
+| Category         | Technologies     |
+|------------------|------------------|
+| Language         | Python           |
+| Data processing  | pandas, NumPy    |
+| Machine learning | scikit-learn     |
+| Deep learning    | PyTorch          |
+| API              | FastAPI, Uvicorn |
+| Validation       | Pydantic         |
+| Persistence      | PyTorch, joblib  |
+| Testing          | pytest           |
+| Containerization | Docker           |
+| CI               | GitHub Actions   |
+| Deployment       | Render           |
 
-Once the API is running, FastAPI's interactive documentation is available at:
+## Project Structure
 
-- Swagger UI: `http://localhost:8001/docs`
-- ReDoc: `http://localhost:8001/redoc`
-
-## 🛠️ Technology Stack
-
-| Category | Technologies |
-|---|---|
-| Programming language | Python |
-| Data processing | pandas, NumPy |
-| Visualization | Matplotlib |
-| Machine learning | scikit-learn |
-| Deep learning | PyTorch |
-| API development | FastAPI, Uvicorn |
-| Data validation | Pydantic |
-| Testing | pytest |
-| Containerization | Docker |
-| Automation | GitHub Actions |
-
-## 📁 Project Structure
-
-```text
+``` text
 energy-forecasting-mlops/
-├── .github/
-│   └── workflows/
-│       └── ci.yml
+├── .github/workflows/ci.yml
 ├── api/
 │   ├── __init__.py
 │   ├── main.py
@@ -258,178 +234,155 @@ energy-forecasting-mlops/
 └── requirements.txt
 ```
 
-## ⚙️ Installation
+## Installation and Local Usage
 
 ### Prerequisites
 
-- Python 3.12
-- pip
-- Git
-
-Docker is optional if you want to run the application in a container.
+Use a Python version compatible with the pinned dependencies in
+`requirements.txt`. You also need pip and Git. Docker is optional.
 
 ### 1. Clone the Repository
 
-```bash
+``` bash
 git clone https://github.com/RasulAramian/energy-forecasting-mlops.git
 cd energy-forecasting-mlops
 ```
 
-### 2. Create a Virtual Environment
+### 2. Create and Activate a Virtual Environment
 
-```bash
-python3.12 -m venv .venv
-```
+On Linux or macOS:
 
-Activate the environment on Linux or macOS:
-
-```bash
+``` bash
+python3 -m venv .venv
 source .venv/bin/activate
 ```
 
 ### 3. Install Dependencies
 
-```bash
+``` bash
 python -m pip install --upgrade pip
 pip install -r requirements.txt
 ```
 
-### 4. Start the API
+### 4. Train the Model
 
-```bash
+Ensure `data/energy_consumption.csv` is present, then run:
+
+``` bash
+python -m src.train
+```
+
+Training saves the selected model weights and fitted scaler under
+`models/`.
+
+### 5. Evaluate the Model
+
+``` bash
+python -m src.evaluate
+```
+
+The script reports MAE and RMSE in MW on the test portion generated by
+the preprocessing pipeline.
+
+### 6. Start the API
+
+Ensure these files exist: `models/energy_lstm_model.pth` and
+`models/scaler.pkl`.
+
+``` bash
 uvicorn api.main:app --host 0.0.0.0 --port 8001
 ```
 
-The API should be accessible at:
+Local endpoints:
 
-```text
-http://localhost:8001
-```
+- Health check: `http://localhost:8001/health`
+- Swagger UI: `http://localhost:8001/docs`
+- ReDoc: `http://localhost:8001/redoc`
 
-Interactive documentation:
+## Docker
 
-```text
-http://localhost:8001/docs
-```
-
-**Important:** The trained model and scaler must be available at the paths expected by the application. If the model artifacts are not included in the repository, train the model first or obtain the artifacts through the project's documented process.
-
-## 🐳 Docker
-
-The repository includes a Dockerfile for packaging the API and its dependencies into a container.
+The repository includes a Dockerfile for packaging the API and its
+dependencies.
 
 ### Build the Image
 
-```bash
+``` bash
 docker build -t energy-forecasting-mlops .
 ```
 
 ### Run the Container
 
-```bash
+``` bash
 docker run --rm -p 8001:8001 --name energy-forecasting-api energy-forecasting-mlops
 ```
 
-Access the API at:
+Open `http://localhost:8001/docs`. The model and scaler must be included
+in the image or provided through a documented runtime mechanism.
 
-```text
-http://localhost:8001
-```
+## Testing
 
-Interactive documentation:
+Run the test suite from the repository root:
 
-```text
-http://localhost:8001/docs
-```
-
-**Validation status:** The Docker workflow should be tested on a clean environment before the project is described as Docker-validated. The model artifacts must also be present inside the image or supplied through a documented volume or artifact-loading mechanism.
-
-## 🧪 Testing
-
-The project uses pytest for automated tests.
-
-Run the test suite with:
-
-```bash
+``` bash
 pytest -v
 ```
 
-The tests cover API behavior and model functionality.
+The tests cover API health behavior, invalid sequence lengths,
+prediction behavior when artifacts are available, unavailable-model
+handling, and model output shape.
 
-Areas to validate include:
+## MLOps and Engineering Practices
 
-- API health checks.
-- Input validation for sequences of the wrong length.
-- Successful predictions when the model and scaler are available.
-- Expected error responses when model artifacts are unavailable.
-- Model output shape and numerical validity.
+- **Chronological splitting:** preserves time order across training,
+  validation, and test sets.
+- **Leakage-aware scaling:** fits the scaler on training observations
+  only.
+- **Validation-based model selection:** saves the model with the best
+  validation loss.
+- **Model persistence:** stores model weights and the fitted scaler.
+- **Model serving:** exposes inference through FastAPI.
+- **Input validation:** validates requests with Pydantic.
+- **Automated testing:** uses pytest for API and model checks.
+- **Containerization:** provides a Dockerfile.
+- **Continuous integration:** includes a GitHub Actions workflow.
+- **Deployment:** serves the API from Render.
 
-Tests for missing model artifacts should explicitly simulate the unavailable-model condition and assert the expected HTTP status code. A test that only checks a status code when it happens to equal a particular value does not reliably verify the intended behavior.
+## Current Limitations and Next Steps
 
-## 🔄 MLOps and Engineering Practices
+- Reproduce earlier reported metrics before documenting them as verified
+  results.
+- Record the test period and dataset version in evaluation reports.
+- Review duplicate timestamps and daylight-saving-time edge cases.
+- Compare the LSTM against clearly implemented and re-evaluated
+  baselines.
+- Add plots of predictions versus actual consumption.
+- Evaluate performance with rolling-window backtesting and across
+  seasons.
+- Improve logging and monitoring for production inference.
+- Verify Docker build and runtime behavior in a clean environment.
+- Track dataset, model, and experiment versions.
 
-The project demonstrates several practices used in practical machine learning systems:
+## Key Takeaways
 
-- **Reproducible data processing:** Explicit preprocessing and sequence construction.
-- **Chronological evaluation:** Training, validation, and test sets are separated by time.
-- **Leakage prevention:** The scaler is fitted only on the training data.
-- **Model selection:** Validation loss is used to select the saved model.
-- **Model serving:** FastAPI provides an interface for inference.
-- **Input validation:** Pydantic schemas define the request structure.
-- **Containerization:** Docker packages the application and its dependencies.
-- **Automated testing:** pytest checks application and model behavior.
-- **Continuous integration:** GitHub Actions runs the configured test workflow.
+This project brings together time-series forecasting and practical ML
+engineering. It demonstrates preparing real-world time-series data,
+training a PyTorch LSTM, evaluating predictions, serving a model through
+a REST API, writing automated tests, and preparing a deployment
+workflow.
 
-### Current Limitations
+The evaluation metrics above reflect the latest run available during
+documentation review. Further reproducibility and validation work
+remains before making broader performance claims.
 
-Some engineering tasks still require validation or completion:
-
-- Complete and validate the standalone evaluation script.
-- Reproduce the reported test metrics from the repository.
-- Strengthen tests for missing or invalid model artifacts.
-- Verify the Docker build and runtime behavior.
-- Confirm that the GitHub Actions workflow passes on the latest commit.
-- Add monitoring and a documented deployment process.
-
-These items should be considered pending until they have been implemented and verified.
-
-## 🔮 Future Improvements
-
-Potential improvements include:
-
-- Completing a reproducible evaluation pipeline.
-- Adding prediction and actual-value plots.
-- Comparing LSTM with GRU, linear models, and other forecasting baselines.
-- Adding rolling-window backtesting.
-- Evaluating performance across different seasons and demand regimes.
-- Improving API error handling and readiness checks.
-- Adding structured logging and inference monitoring.
-- Publishing a validated deployment.
-- Tracking experiments and model versions.
-- Automating model training and artifact management.
-
-## 📌 Key Takeaways
-
-This project brings together time-series forecasting and practical machine learning engineering.
-
-It demonstrates experience with:
-
-- Preparing real-world time-series data.
-- Building and training an LSTM model with PyTorch.
-- Evaluating forecasts against a baseline.
-- Exposing a trained model through a REST API.
-- Writing automated tests.
-- Preparing a project for containerized execution and continuous integration.
-
-The reported evaluation results are promising, while full metric reproducibility, Docker validation, and several production-readiness improvements remain important next steps.
-
-## 👨‍💻 Author
+## Author
 
 **Rasul Aramian**
 
 PhD in Mathematics
 
-Applying mathematical and programming skills to machine learning, deep learning, and practical ML engineering projects.
+Applying mathematical and programming skills to machine learning, deep
+learning, and practical ML engineering.
 
 - **GitHub:** [RasulAramian](https://github.com/RasulAramian)
-- **Project Repository:** [energy-forecasting-mlops](https://github.com/RasulAramian/energy-forecasting-mlops)
+- **Project Repository:**
+  [energy-forecasting-mlops](https://github.com/RasulAramian/energy-forecasting-mlops)
