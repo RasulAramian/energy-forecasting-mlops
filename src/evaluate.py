@@ -23,13 +23,14 @@ def evaluate_model():
             f"Scaler file not found: {scaler_path}. Please run training first."
         )
 
-    print("Loading test data...")
-    datasets, _ = load_and_preprocess_data()
-    X_test, y_test = datasets["test"]
-
-    print("Loading model and saved scaler...")
+    print("Loading saved scaler...")
     scaler = joblib.load(scaler_path)
 
+    print("Loading test data...")
+    datasets, _ = load_and_preprocess_data(scaler=scaler)
+    X_test, y_test = datasets["test"]
+
+    print("Loading model...")
     model = EnergyLSTM(
         input_dim=1,
         hidden_dim=50,

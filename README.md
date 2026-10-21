@@ -54,8 +54,6 @@ This is a univariate time-series forecasting problem. Given the most
 recent 24 hourly consumption measurements, the model predicts the next
 hourly value:
 
-Given the previous 24 hourly observations, the model predicts the next hourly consumption value:
-
 `Prediction at time t+1 = f(observations from time t-23 through time t)`
 
 ### Preprocessing
